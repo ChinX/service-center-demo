@@ -63,15 +63,15 @@ func run(ctx context.Context) {
 	}
 
 	// 启动心跳
-	//go servicecenter.Heartbeat(ctx, conf.Service)
+	go servicecenter.Heartbeat(ctx, conf.Service)
 	if conf.Provider != nil {
 		conf.Provider.ID, err = servicecenter.Discovery(serviceID, conf.Provider)
 		if err != nil {
 			log.Fatalln(err)
 		}
-		servicecenter.WatchProvider(ctx, conf.Service.ID)
+		go servicecenter.WatchProvider(ctx, conf.Service.ID)
 	}
-
+	sayHello()
 }
 
 func stop() {
@@ -84,7 +84,6 @@ func stop() {
 func httpListener(listenAddress string) {
 	// 启动 http 监听
 	http.HandleFunc("/sayhello", func(w http.ResponseWriter, r *http.Request) {
-		log.Println(servicecenter.ProviderEndpoints(conf.Provider))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(sayHello()))
 	})
