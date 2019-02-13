@@ -8,49 +8,56 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/servicecomb-service-center/pkg/client/sc"
 	"github.com/apache/servicecomb-service-center/server/core/proto"
-	"github.com/chinx/service-center-demo/helloworld/rest/common/config"
-	"github.com/chinx/service-center-demo/helloworld/rest/common/servicecenter/v3"
+	"github.com/chinx/service-center-demo/helloworld/rest/config"
 )
 
 var (
-	cli               *v3.Client
-	heartbeatInterval = 30 * time.Second
-	providerCaches    = &sync.Map{}
+	domainProject     string
+	cli               *sc.SCClient
+	heartbeatInterval  = 30 * time.Second
+	providerCaches        = &sync.Map{}
 )
 
-func InitRegistry(domain string, registry *config.Registry) {
-	cli = v3.NewClient(domain, registry.Endpoints...)
+func InitRegistry(tenant string, registry *config.Registry) (err error) {
+	cli, err = sc.NewSCClient(sc.Config{Endpoints: registry.Endpoints})
+	if err == nil {
+		domainProject = tenant
+	}
+	return err
 }
 
-func Register(svc *config.MicroService) (serviceID, instanceID string, err error) {
+func Register(ctx context.Context, svc *config.MicroService) (string, string, error) {
 	service := transformMicroService(svc)
 
 	// 检测微服务是否存在
-	serviceID, _ = cli.GetServiceID(service)
+	serviceID, err := cli.ServiceExistence(ctx, domainProject, service.AppId, service.ServiceName, service.Version, "")
 	if serviceID == "" {
 		// 注册微服务
-		serviceID, err = cli.RegisterService(service)
+		serviceID, err = cli.CreateService(ctx, domainProject, service)
 		if err != nil {
-			return
+			return "", "", err
 		}
 	}
+
 	if svc.Instance == nil {
-		return
+		return serviceID, "", nil
 	}
 
 	// 注册微服务实例
 	instance := transformInstance(svc.Instance)
-	instanceID, err = cli.RegisterInstance(serviceID, instance)
-	return
+	instanceID, err := cli.RegisterInstance(ctx, domainProject, serviceID, instance)
+	if err != nil{
+		return "", "", err
+	}
+	return serviceID, instanceID, nil
 }
 
-func Unregister(svc *config.MicroService) error {
-	service := transformMicroService(svc)
+func Unregister(ctx context.Context, svc *config.MicroService) error {
 	if svc.Instance != nil {
-		instance := transformInstance(svc.Instance)
 		// 注销微服务实例
-		err := cli.UnregisterInstance(svc.ID, instance)
+		err := cli.UnregisterInstance(ctx, domainProject, svc.ID, svc.Instance.ID)
 		if err != nil {
 			return err
 		}
@@ -59,12 +66,12 @@ func Unregister(svc *config.MicroService) error {
 	// 实例注销后，服务中心清理数据需要一些时间，稍作延后
 	time.Sleep(time.Second * 3)
 	// 注销微服务
-	return cli.UnregisterService(service)
+	return cli.DeleteService(ctx, domainProject, svc.ID)
 }
 
-func Discovery(consumerId string, provider *config.MicroService) (string, error) {
+func Discovery(ctx context.Context, consumerId string, provider *config.MicroService) (string, error) {
 	service := transformMicroService(provider)
-	list, err := cli.Discovery(consumerId, service)
+	list, err := cli.DiscoveryInstances(ctx, domainProject, consumerId, service.AppId, service.ServiceName, service.Version)
 	if err != nil || len(list) == 0 {
 		return "", fmt.Errorf("provider not found, serviceName: %s appID: %s, version: %s",
 			provider.Name, provider.AppID, provider.Version)
@@ -100,7 +107,7 @@ func ProviderEndpoints(provider *config.MicroService) ([]string, error) {
 
 // 订阅服务，更新 provider 缓存
 func WatchProvider(ctx context.Context, serviceID string) {
-	err := cli.WatchService(ctx, serviceID, func (result *proto.WatchInstanceResponse) {
+	err := cli.Watch(ctx, domainProject, serviceID, func(result *proto.WatchInstanceResponse) {
 		log.Println("reply from watch service")
 		list, ok := providerCaches.Load(result.Instance.ServiceId)
 		if !ok {
@@ -125,7 +132,7 @@ func WatchProvider(ctx context.Context, serviceID string) {
 				break
 			}
 		}
-		if !renew && result.Action != "DELETE"{
+		if !renew && result.Action != "DELETE" {
 			providerList = append(providerList, result.Instance)
 		}
 		log.Println("update provider list:", providerList)
@@ -137,17 +144,13 @@ func WatchProvider(ctx context.Context, serviceID string) {
 }
 
 func Heartbeat(ctx context.Context, svc *config.MicroService) {
-	heartbeat := &proto.HeartbeatSetElement{
-		ServiceId:  svc.ID,
-		InstanceId: svc.Instance.ID,
-	}
 	// 启动定时器：间隔30s
 	tk := time.NewTicker(heartbeatInterval)
 	for {
 		select {
 		case <-tk.C:
 			// 定时发送心跳
-			err := cli.Heartbeat(heartbeat)
+			err := cli.Heartbeat(ctx, domainProject, svc.ID, svc.Instance.ID)
 			if err != nil {
 				log.Println(err)
 				tk.Stop()

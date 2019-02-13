@@ -47,6 +47,7 @@ type Registry struct {
 // 租户信息
 type Tenant struct {
 	Domain string `yaml:"domain"`
+	Project string `yaml:"project"`
 }
 
 // 加载配置
@@ -72,6 +73,10 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	if conf.Tenant.Domain == "" {
 		conf.Tenant.Domain = "default"
+	}
+
+	if conf.Tenant.Project == "" {
+		conf.Tenant.Project = "default"
 	}
 
 	if conf.Service.Instance != nil {

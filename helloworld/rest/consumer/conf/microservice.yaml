@@ -4,10 +4,10 @@ service: # 微服务配置
   version: 1.0.0
   instance: # 实例信息
     protocol: rest
-    listenAddress: 127.0.0.1:8090 #实例监听地址
+    listenAddress: 192.168.88.239:8090 #实例监听地址
 provider: # 服务端信息
   appId: helloword
   name: RestProviderDemo
   version: 1.0.0
 registry:
-  address: http://127.0.0.1:30100 # service-center 地址
+  address: http://192.168.88.75:30100,http://192.168.88.109:30100 # service-center 地址

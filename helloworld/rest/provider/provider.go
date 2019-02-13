@@ -9,14 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/chinx/service-center-demo/helloworld/rest/common/config"
-	"github.com/chinx/service-center-demo/helloworld/rest/common/servicecenter"
+	"github.com/chinx/service-center-demo/helloworld/rest/config"
+	"github.com/chinx/service-center-demo/helloworld/rest/servicecenter"
 )
 
 var conf *config.Config
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	// 加载配置文件
 	var err error
 	conf, err = config.LoadConfig("./conf/microservice.yaml")
@@ -42,32 +41,35 @@ func awaitingSystemSignal() {
 	fmt.Println("close instance by:", sig)
 }
 
+func stop() {
+	err := servicecenter.Unregister(context.Background(), conf.Service)
+	if err != nil {
+		log.Println(err)
+	}
+}
+
 func run(ctx context.Context) {
 	// 启动http监听
-	if conf.Service.Instance != nil{
+	if conf.Service.Instance != nil {
 		go httpListener(conf.Service.Instance.ListenAddress)
 	}
 
 	// 初始化 service-center
-	servicecenter.InitRegistry(conf.Tenant.Domain, conf.Registry)
-	serviceID, instanceID, err := servicecenter.Register(conf.Service)
+	servicecenter.InitRegistry(conf.Tenant.Domain+"/"+conf.Tenant.Project, conf.Registry)
+	serviceID, instanceID, err := servicecenter.Register(ctx, conf.Service)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	log.Println("ServiceID:", serviceID)
+	log.Println("InstanceID:", instanceID)
+
 	conf.Service.ID = serviceID
 	if conf.Service.Instance != nil {
 		conf.Service.Instance.ID = instanceID
 	}
 
 	// 启动心跳
-	servicecenter.Heartbeat(ctx, conf.Service)
-}
-
-func stop() {
-	err := servicecenter.Unregister(conf.Service)
-	if err != nil {
-		log.Println(err)
-	}
+	go servicecenter.Heartbeat(ctx, conf.Service)
 }
 
 func httpListener(listenAddress string) {
