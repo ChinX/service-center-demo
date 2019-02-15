@@ -32,7 +32,7 @@ func Register(ctx context.Context, svc *config.MicroService) (string, string, er
 	service := transformMicroService(svc)
 
 	// 检测微服务是否存在
-	serviceID, err := cli.ServiceExistence(ctx, domainProject, service)
+	serviceID, err := cli.ServiceExistence(ctx, domainProject, sc.MicroServiceType, service.AppId, service.ServiceName, service.Version, svc)
 	if serviceID == "" {
 		// 注册微服务
 		serviceID, err = cli.CreateService(ctx, domainProject, service)
