@@ -6,13 +6,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
+	"net/url"
 
 	"github.com/apache/servicecomb-service-center/pkg/client/sc"
+	"github.com/apache/servicecomb-service-center/server/core/proto"
 	"github.com/chinx/service-center-demo/helloworld/rest/config"
-	"github.com/chinx/service-center-demo/helloworld/rest/servicecenter"
 )
 
 var conf *config.Config
@@ -25,105 +23,107 @@ func main() {
 		log.Fatalf("load config file faild: %s", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go run(ctx)
-	fmt.Println("awaiting system signal")
-	awaitingSystemSignal()
-	cancel()
-	stop()
-	fmt.Println("exiting")
-}
-
-// 监听系统终止信号
-func awaitingSystemSignal() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
-
-	sig := <-sigChan
-	fmt.Println("close instance by:", sig)
-}
-
-func stop() {
-	err := servicecenter.Unregister(context.Background(), conf.Service)
+	// 从服务中心发现服务端实例，并与之通讯
+	endpoints, err := discoverProvider()
 	if err != nil {
-		log.Println(err)
-	}
-}
-
-func run(ctx context.Context) {
-	// 启动http监听
-	if conf.Service.Instance != nil {
-		go httpListener(conf.Service.Instance.ListenAddress)
+		log.Fatalf("discover and requset faild: %s", err)
 	}
 
-	// 初始化 service-center
-	servicecenter.InitRegistry(conf.Tenant.Domain+"/"+conf.Tenant.Project, conf.Registry)
-	serviceID, instanceID, err := servicecenter.Register(ctx, conf.Service)
+	// 与 provider 服务通讯
+	err = sayHello(endpoints)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("say hello to provider faild: %s", err)
 	}
-	log.Println("ServiceID:", serviceID)
-	log.Println("InstanceID:", instanceID)
-
-	conf.Service.ID = serviceID
-	if conf.Service.Instance != nil {
-		conf.Service.Instance.ID = instanceID
-	}
-
-	// 启动心跳
-	go servicecenter.Heartbeat(ctx, conf.Service)
-	discoverProvider(ctx, serviceID)
-	sayHello(ctx)
 }
 
-func httpListener(listenAddress string) {
-	// 启动 http 监听
-	http.HandleFunc("/sayhello", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(sayHello(r.Context())))
-	})
-	err := http.ListenAndServe(listenAddress, nil)
+func discoverProvider() ([]string, error) {
+	ctx := context.Background()
+
+	// 创建 sc client
+	client, err := sc.NewSCClient(sc.Config{Endpoints: conf.Registry.Endpoints})
 	if err != nil {
-		log.Fatalln(err)
+		return nil, fmt.Errorf("new sc client faild: %s", err)
 	}
-}
 
-func discoverProvider(ctx context.Context, serviceID string) {
-	if conf.Provider != nil {
-		providerID, err := servicecenter.Discovery(ctx, serviceID, conf.Provider)
+	domainProject := conf.Tenant.Domain + "/" + conf.Tenant.Project
+
+	// 检测微服务是否存在
+	serviceID, _ := client.ServiceExistence(ctx, domainProject,
+		conf.Service.AppID, conf.Service.Name, conf.Service.Version, "")
+	if serviceID == "" {
+
+		// 创建微服务信息
+		nid, err := client.CreateService(ctx, domainProject, &proto.MicroService{
+			AppId:       conf.Service.AppID,
+			ServiceId:   conf.Service.ID,
+			ServiceName: conf.Service.Name,
+			Version:     conf.Service.Version,
+		})
 		if err != nil {
-			log.Fatalln(err)
+			return nil, fmt.Errorf("create service faild: %s", err)
 		}
-		conf.Provider.ID = providerID
-		go servicecenter.WatchProvider(ctx, conf.Service.ID)
+		serviceID = nid
 	}
+	log.Println("[create consumer] serviceId:", serviceID)
+
+	if conf.Provider == nil {
+		return nil, fmt.Errorf("provider config not found")
+	}
+
+	list, err1 := client.DiscoveryInstances(ctx, domainProject, serviceID,
+		conf.Provider.AppID, conf.Provider.Name, conf.Provider.VersionRule)
+	if err1 != nil || len(list) == 0 {
+		return nil, fmt.Errorf("provider not found, serviceName: %s appID: %s, versionRule: %s",
+			conf.Provider.Name, conf.Provider.AppID, conf.Provider.VersionRule)
+	}
+
+	endpoints := make([]string, 0, len(list))
+
+	// 解析实例 endpoint 为普通 http 地址
+	for i := 0; i < len(list); i++ {
+		es := list[i].Endpoints
+		for j := 0; j < len(es); j++ {
+			addr, err := url.Parse(es[j])
+			if err != nil {
+				log.Printf("parse provider endpoint faild: %s", err)
+				continue
+			}
+			if addr.Scheme == "rest" {
+				addr.Scheme = "http"
+			}
+			endpoints = append(endpoints, addr.String())
+		}
+	}
+	log.Println("[discovery provider instances] endpoints:", endpoints)
+	return endpoints, nil
 }
 
 // 与 provider 通讯
-func sayHello(ctx context.Context) string {
-	endPoints, err := servicecenter.ProviderEndpoints(conf.Provider)
+func sayHello(endpoints []string) error {
+	// 创建负载均衡 client
+	client, err := sc.NewLBClient(endpoints, (&sc.Config{Endpoints: endpoints}).Merge())
 	if err != nil {
-		return fmt.Sprintf("get provider endpoints faild: %s", err)
+		return fmt.Errorf("new lb client faild: %s", err)
 	}
-	client, err := sc.NewLBClient(endPoints, (&sc.Config{Endpoints: endPoints}).Merge())
+
+	log.Println("send request to provider")
+
+	// 发送http请求
+	resp, err := client.RestDoWithContext(context.Background(), http.MethodGet, "/hello", nil, nil)
 	if err != nil {
-		return fmt.Sprintf("new lb client faild: %s", err)
-	}
-	resp, err := client.RestDoWithContext(ctx, http.MethodGet, "/hello", nil, nil)
-	if err != nil {
-		return fmt.Sprintf("do request faild: %s", err)
+		return fmt.Errorf("do request faild: %s", err)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Sprintf("read response faild: %s", err)
+		return fmt.Errorf("read response faild: %s", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("do request failed, response statusCode: %d, body: %s",
+		return fmt.Errorf("do request failed, response statusCode: %d, body: %s",
 			resp.StatusCode, string(body))
 	}
 	message := string(body)
 	log.Printf("reply form provider: %s", message)
-	return message
+	return nil
 }

@@ -23,11 +23,12 @@ type Config struct {
 
 // 微服务配置
 type MicroService struct {
-	ID       string    `yaml:"-"`
-	AppID    string    `yaml:"appId"`
-	Name     string    `yaml:"name"`
-	Version  string    `yaml:"version"`
-	Instance *Instance `yaml:"instance"`
+	ID          string    `yaml:"-"`
+	AppID       string    `yaml:"appId"`
+	Name        string    `yaml:"name"`
+	Version     string    `yaml:"version"`
+	VersionRule string    `yaml:"versionRule"`
+	Instance    *Instance `yaml:"instance"`
 }
 
 // 实例配置
@@ -46,7 +47,7 @@ type Registry struct {
 
 // 租户信息
 type Tenant struct {
-	Domain string `yaml:"domain"`
+	Domain  string `yaml:"domain"`
 	Project string `yaml:"project"`
 }
 
@@ -111,6 +112,12 @@ func LoadConfig(filePath string) (*Config, error) {
 		_, err := url.Parse(conf.Registry.Endpoints[i])
 		if err != nil {
 			return nil, fmt.Errorf("parse registry address faild: %s", err)
+		}
+	}
+
+	if conf.Provider != nil {
+		if conf.Provider.VersionRule == "" {
+			conf.Provider.VersionRule = "latest"
 		}
 	}
 	return conf, nil
